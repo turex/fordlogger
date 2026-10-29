@@ -20,6 +20,7 @@ DEFAULT_CONFIG = {
     "db_password": "fordlogger",
     "sleep_after_minutes": 30,
     "token_file": "tokens.json",
+    "token_dir": "",
 }
 
 INTERVALS = {
@@ -29,19 +30,49 @@ INTERVALS = {
     "sleeping": 300,
 }
 
+# Environment variable -> config key (string values)
+_ENV_STR = {
+    "FORDLOGGER_DB_HOST": "db_host",
+    "FORDLOGGER_DB_NAME": "db_name",
+    "FORDLOGGER_DB_USER": "db_user",
+    "FORDLOGGER_DB_PASSWORD": "db_password",
+    "FORDLOGGER_TOKEN_DIR": "token_dir",
+}
+
+
+def _env_bool(name: str, default: str = "true") -> bool:
+    return os.environ.get(name, default).strip().lower() in ("true", "1", "yes")
+
 
 def load_config(path: str = "config.json") -> dict:
     p = Path(path)
     if not p.exists():
         raise FileNotFoundError(f"Config file not found: {p}")
-    cfg = {**DEFAULT_CONFIG, **json.loads(p.read_text())}
+    if p.is_dir():
+        raise IsADirectoryError(
+            f"{p} is a directory, not a file. Docker creates a directory when a bind-mounted "
+            f"file does not exist on the host. Stop the stack, remove it and copy "
+            f"config.example.json to config.json."
+        )
+    try:
+        user_cfg = json.loads(p.read_text())
+    except json.JSONDecodeError as e:
+        raise ValueError(f"{p} is not valid JSON: {e}") from e
+
+    cfg = {**DEFAULT_CONFIG, **user_cfg}
+
     # Allow env var overrides for Docker vs local dev
-    if os.environ.get("FORDLOGGER_DB_HOST"):
-        cfg["db_host"] = os.environ["FORDLOGGER_DB_HOST"]
+    for env_name, key in _ENV_STR.items():
+        if os.environ.get(env_name):
+            cfg[key] = os.environ[env_name]
     if os.environ.get("FORDLOGGER_DB_PORT"):
         cfg["db_port"] = int(os.environ["FORDLOGGER_DB_PORT"])
-    cfg["store_raw_json"] = os.environ.get("FORDLOGGER_STORE_RAW_JSON", "true").lower() in ("true", "1", "yes")
-    cfg["geocoding"] = os.environ.get("FORDLOGGER_GEOCODING", "true").lower() in ("true", "1", "yes")
+
+    cfg["store_raw_json"] = _env_bool("FORDLOGGER_STORE_RAW_JSON")
+    cfg["geocoding"] = _env_bool("FORDLOGGER_GEOCODING")
+
     if not cfg["client_id"] or not cfg["client_secret"]:
         raise ValueError("client_id and client_secret must be set in config.json")
+    if "your-client" in cfg["client_id"] or "your-client" in cfg["client_secret"]:
+        raise ValueError("config.json still contains the placeholder client_id/client_secret")
     return cfg
